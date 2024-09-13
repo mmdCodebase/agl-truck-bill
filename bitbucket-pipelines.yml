@@ -1,0 +1,197 @@
+# This is an example Starter pipeline configuration
+# Use a skeleton to build, test and deploy using manual and parallel steps
+# -----
+# You can specify a custom docker image from Docker Hub as your build environment.
+
+image: atlassian/default-image:4
+definitions:
+  steps:
+    - step: &build-backend-prod
+          name: 'Build, tag, push image to ECR'
+          script:
+          # build the image
+          - echo "Build, tag, push image to ECR"
+          - export TIMESTAMP="$(date +%Y%m%d)"
+          - export IMAGE_NAME=agl-truckbill            
+          - export TAG="$TIMESTAMP"
+          - cd backend
+          - apt-get update && apt-get install -y unzip git
+          - ls
+          - git clone https://agl-ikim:${BITBUCKET_API_KEY}@bitbucket.org/aglscc/agl-python-helpers.git
+          - docker build . --tag agl-truckbill
+          - docker tag agl-truckbill agl-truckbill:$BITBUCKET_BUILD_NUMBER
+          - pipe: atlassian/aws-ecr-push-image:2.0.0
+            variables:
+              AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID # Optional if already defined in the context.
+              AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY # Optional if already defined in the context.
+              AWS_DEFAULT_REGION: 'us-east-1' # Optional if already defined in the context.
+              IMAGE_NAME: 'agl-truckbill'
+              TAGS: $BITBUCKET_BUILD_NUMBER
+          services:
+            - docker
+    
+    - step: &deploy-backend-prod
+          name: 'Deploy image to ECS'
+          script:
+            - export IMAGE_NAME="586171400497.dkr.ecr.us-east-1.amazonaws.com/agl-truckbill:${BITBUCKET_BUILD_NUMBER}"
+            - export BUILD_NUMBER="${BITBUCKET_BUILD_NUMBER}"
+            - export PROJECT_NAME=${PROJECT_NAME}
+            - envsubst < task-definition-template-prod.json >  task-definition.json
+            - pipe: atlassian/aws-ecs-deploy:1.9.0
+              variables:
+                AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+                AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+                AWS_DEFAULT_REGION: 'us-east-1'
+                CLUSTER_NAME: 'agl-ops-helpers'
+                SERVICE_NAME: 'agl-truckbill'
+                TASK_DEFINITION: 'task-definition.json'
+                FORCE_NEW_DEPLOYMENT: 'true'
+
+    - step: &build-backend-test
+          name: 'Build, tag, push image to ECR'
+          script:
+          # build the image
+          - echo "Build, tag, push image to ECR"
+          - export TIMESTAMP="$(date +%Y%m%d)"
+          - export IMAGE_NAME=agl-truckbill-test            
+          - export TAG="$TIMESTAMP"
+          - cd backend
+          - apt-get update && apt-get install -y unzip git
+          - ls
+          - git clone https://agl-ikim:${BITBUCKET_API_KEY}@bitbucket.org/aglscc/agl-python-helpers.git
+          - docker build . --tag agl-truckbill-test
+          - docker tag agl-truckbill-test agl-truckbill-test:$BITBUCKET_BUILD_NUMBER
+          - pipe: atlassian/aws-ecr-push-image:2.0.0
+            variables:
+              AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID # Optional if already defined in the context.
+              AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY # Optional if already defined in the context.
+              AWS_DEFAULT_REGION: 'us-east-1' # Optional if already defined in the context.
+              IMAGE_NAME: 'agl-truckbill-test'
+              TAGS: $BITBUCKET_BUILD_NUMBER
+          services:
+            - docker
+    
+    - step: &deploy-backend-test
+          name: 'Deploy image to ECS'
+          script:
+            - export IMAGE_NAME="586171400497.dkr.ecr.us-east-1.amazonaws.com/agl-truckbill-test:${BITBUCKET_BUILD_NUMBER}"
+            - export BUILD_NUMBER="${BITBUCKET_BUILD_NUMBER}"
+            - export PROJECT_NAME=${PROJECT_NAME}
+            - envsubst < task-definition-template-test.json >  task-definition.json
+            - pipe: atlassian/aws-ecs-deploy:1.9.0
+              variables:
+                AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+                AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+                AWS_DEFAULT_REGION: 'us-east-1'
+                CLUSTER_NAME: 'agl-ops-helpers-test'
+                SERVICE_NAME: 'agl-truckbill-test'
+                TASK_DEFINITION: 'task-definition.json'
+                FORCE_NEW_DEPLOYMENT: 'true'
+    
+    - step: &build-front-end-prod
+        image: node:20
+        name: 'Build and Test Frontend'
+        script:
+          - echo "Starting front end build"
+          - cd frontend
+          - node -v
+          - npm install
+          - npm run build:prod
+          - ls -la
+          - ls -la ../
+          - pipe: atlassian/aws-s3-deploy:1.1.0
+            variables:
+              AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+              AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+              AWS_DEFAULT_REGION: 'us-east-1'
+              S3_BUCKET: $S3_BUCKET
+              LOCAL_PATH: 'dist'
+        artifacts:
+          - build
+   
+    - step: &invalidate-cdn-prod
+          name: 'Invalidate and update CDN'
+          script:
+          - pipe: atlassian/aws-cloudfront-invalidate:0.6.0
+            variables:
+              DISTRIBUTION_ID: $DISTRIBUTION_ID
+    
+    - step: &build-front-end-test
+        image: node:20
+        name: 'Build and Test Frontend'
+        script:
+          - echo "Starting front end build"
+          - cd frontend
+          - node -v
+          - npm install
+          - npm run build:dev
+          - ls -la
+          - ls -la ../
+          - pipe: atlassian/aws-s3-deploy:1.1.0
+            variables:
+              AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+              AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+              AWS_DEFAULT_REGION: 'us-east-1'
+              S3_BUCKET: $S3_BUCKET_TEST
+              LOCAL_PATH: 'dist'
+        artifacts:
+          - build
+   
+    - step: &invalidate-cdn-test
+          name: 'Invalidate and update CDN'
+          script:
+          - pipe: atlassian/aws-cloudfront-invalidate:0.6.0
+            variables:
+              DISTRIBUTION_ID: $DISTRIBUTION_ID_TEST
+    
+pipelines:
+  default:
+    - step:
+        name: 'Sonarqube integration'
+        script:
+          - echo "Placeholder for future integrations"
+    - step:
+        name: Install Terraform
+        script:
+          - apt-get update && apt-get install -y curl
+          - curl -O https://releases.hashicorp.com/terraform/1.0.9/terraform_1.0.9_linux_amd64.zip
+          - unzip terraform_1.0.9_linux_amd64.zip
+          - mv terraform /usr/local/bin/
+          - terraform --version
+
+        caches:
+          - terraform
+
+    - step:
+        name: Deploy Infrastructure
+        script:
+          - terraform init
+          - terraform plan
+          - terraform apply --auto-approve
+  
+  branches:
+    release:
+      #- step: *run-unit-test
+      - parallel:
+        - step: *build-backend-prod
+        - step: *build-front-end-prod
+      - parallel:
+        - step: *deploy-backend-prod
+        - step: *invalidate-cdn-prod
+
+    master:
+      #- step: *run-unit-test
+      - parallel:
+        - step: *build-backend-test
+        - step: *build-front-end-test
+      - parallel:
+        - step: *deploy-backend-test
+        - step: *invalidate-cdn-test
+    
+    test/frontend:
+      - step: *build-front-end-test
+      - step: *invalidate-cdn-test
+    
+    release/frontend:
+      - step: *build-front-end-prod
+      - step: *invalidate-cdn-prod
